@@ -5,6 +5,7 @@
 #include<array>
 #include<vector>
 #include<cmath>
+#include<cstring>
 using std::array, std::vector;
 enum Move {
     ROCK, PAPER, SCISSORS
@@ -19,9 +20,7 @@ static constexpr float learning_rate{ 0.5f };
 vector<float> deltas{};
 
 inline void clear_deltas() {
-    for (int i = 0; i < deltas.size(); ++i) {
-        deltas[i]=0.0f;
-    }
+    std::memset(deltas.data(), 0, deltas.size() * sizeof(float));
 }
 
 static constexpr array<float, layer_size> empty_layer{ []()consteval {
@@ -64,10 +63,69 @@ struct Network {
             }
         }
     }
+    void train_all(const vector<Move>& moves, const vector<Move>& opponent_moves) {
+        static constexpr size_t set_size{ 10 };
+        static constexpr float win_target{ 1.0f };
+        static constexpr float draw_target{ 0.75f };
+        static constexpr array<array<float, 3>, 3>to_target{ {{draw_target, win_target, 0.0f}, {0.0f, draw_target, win_target}, {win_target, 0.0f, draw_target}} };
+        if (moves.size() < set_size + input_size - 1) return;
+        array<array<float, layer_size* layer_size>, layer_count - 1> new_weights{};
+        array<float, 3 * layer_size> new_output_weights{};
+        array<float, 3 * layer_size * input_size> new_input_weights{};
+        for (int index = moves.size() - (set_size + input_size); index < moves.size() - input_size; ++index) {
+            std::memset(new_weights.data(), 0, new_weights.size() * new_weights[0].size() * sizeof(float));
+            std::memset(new_input_weights.data(), 0, new_input_weights.size() * sizeof(float));
+            std::memset(new_output_weights.data(), 0, new_output_weights.size() * sizeof(float));
+            //new_weights = array<array<float, layer_size* layer_size>, layer_count - 1>{};
+            //new_output_weights = array<float, 3 * layer_size>{};
+            //new_input_weights = array<float, 3 * layer_size * input_size>{};
+            const array<float, 3>& target{ to_target[opponent_moves[index]] };
+            //std::cout << "index: " << index<<"\n";
+            for (int i = 0; i < input_size; ++i) {
+                array<bool, 3> arr{ false,false,false };
+                //std::cout << "index+i+1:" << index + i + 1 << "\twriten to " << input_size - 1 - i << "\n";
+                arr[opponent_moves[index+i+1]] = true;
+                input_nodes[input_size - 1 - i] = arr;
+            }
+            //std::cout << "moves.size() " << moves.size() << "\n";
+            run();
+            //std::cout <<"Target: " << target[0] << ", " << target[1] << ", " << target[2] << "\n";
+            for (size_t i = 0; i < layer_size; ++i) {
+                const size_t offset{ i * 3 };
+                for (size_t j = 0; j < 3; ++j) {
+                    new_output_weights[offset + j] = output_layer_weights[offset + j] - learning_rate * weighted_activations.back()[i] * (output_nodes[j] - target[j]) * output_nodes[j] * (1 - output_nodes[j]);
+                }
+            }
+            clear_deltas();
+            for (int l = (int)layer_weights.size() - 1; l > -1; --l) {
+                for (int i = 0; i < layer_size; ++i) {
+                    for (int j = 0; j < layer_size; ++j) {
+                        const float d{ delta(l, j, target, deltas) };
+                        new_weights[l][j * layer_size + i] = layer_weights[l][layer_size * j + i] - learning_rate * weighted_activations[l + 1][i] * d;
+                    }
+                }
+            }
+            for (int i = 0; i < 3 * input_size; ++i) {
+                const size_t offset{ i * layer_size };
+                for (int j = 0; j < layer_size; ++j) {
+                    const float factor{ weighted_activations[1][j] * (1 - weighted_activations[1][j]) };
+                    float acc{ 0 };
+                    for (int k = 0; k < layer_size; ++k) {
+                        acc += layer_weights[0][j * layer_size + k] * delta(0, k, target, deltas);
+                    }
+                    new_input_weights[offset + j] = input_layer_weights[offset + j] - learning_rate * weighted_activations[0][i] * acc * factor;
+                }
+            }
+            layer_weights = new_weights;
+            output_layer_weights = new_output_weights;
+            input_layer_weights = new_input_weights;
+        }
+    }
     void train(const Result res, const Move should_have_played) {
-        const array<float, 3> target{ 0.75f * (should_have_played == PAPER) + 1.0f * (should_have_played == ROCK),
-            0.75f * (should_have_played == SCISSORS) + 1.0f * (should_have_played == PAPER),
-            0.75f * (should_have_played == ROCK) + 1.0f * (should_have_played == SCISSORS) };
+        static constexpr float win_target{ 1.0f };
+        static constexpr float draw_target{ 0.75f };
+        static constexpr array<array<float, 3>, 3>to_target{ {{win_target, 0.0f, draw_target}, {draw_target, win_target, 0.0f}, {0.0f, draw_target, win_target}} };
+        const array<float, 3>& target{ to_target[should_have_played] };
         //std::cout <<"Target: " << target[0] << ", " << target[1] << ", " << target[2] << "\n";
         array<array<float, layer_size* layer_size>, layer_count - 1> new_weights{};
         array<float, 3 * layer_size> new_output_weights{};
@@ -76,8 +134,6 @@ struct Network {
             const size_t offset{ i * 3 };
             for (size_t j = 0; j < 3; ++j) {
                 new_output_weights[offset + j] = output_layer_weights[offset + j] - learning_rate * weighted_activations.back()[i] * (output_nodes[j] - target[j]) * output_nodes[j] * (1 - output_nodes[j]);
-                //std::cout << weighted_activations.back()[i] << "\n"<< output_nodes[j]<<"\n";
-                //std::cout << output_layer_weights[offset + j] << "-> " << new_output_weights[offset + j] << "\n";
             }
         }
         clear_deltas();
@@ -85,10 +141,7 @@ struct Network {
             for (int i = 0; i < layer_size; ++i) {
                 for (int j = 0; j < layer_size; ++j) {
                     const float d{ delta(l, j, target, deltas) };
-                    //std::cout << d << " (delta)\n";
                     new_weights[l][j * layer_size + i] = layer_weights[l][layer_size * j + i] - learning_rate * weighted_activations[l + 1][i] * d;
-                    //std::cout << weighted_activations.back()[i] << "\n"<< output_nodes[j]<<"\n";
-                    //std::cout << layer_weights[l][layer_size * j + i] << " -> " << new_weights[l][j * layer_size + i] << "\n";
                 }
             }
         }
@@ -117,7 +170,6 @@ struct Network {
             for (int i = 0; i < output_nodes.size(); ++i) {
                 acc += output_layer_weights[3 * j + i] * output_nodes[i] * (output_nodes[i] - target[i]) * output_nodes[i] * (1 - output_nodes[i]);
             }
-            //std::cout << acc * factor << " (delta)\n";
             const float ret{ acc * factor };
             known_deltas[layer*layer_size + j] = ret;
             return ret;
@@ -236,6 +288,7 @@ struct Engine {
             static constexpr array<Move, 3> to_win{ PAPER,SCISSORS,ROCK };
             should_have_played = to_win[opponent_moves.back()];
         }
+        //net.train_all(moves, opponent_moves);
         net.train(res, should_have_played);
     }
 };
